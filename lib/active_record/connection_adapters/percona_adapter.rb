@@ -251,17 +251,29 @@ module ActiveRecord
 
       if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
         def raw_execute(sql, name, async: false, allow_retry: false, materialize_transactions: true)
-          log(sql, name, async: async) do |notification_payload|
-            with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
-              sync_timezone_changes(conn)
-              result = conn.query(sql)
-              conn.abandon_results! if ActiveRecord::VERSION::MINOR >= 2
-              verified! if ActiveRecord.version >= Gem::Version.create('7.1.2')
-              handle_warnings(sql)
-              notification_payload[:row_count] = result&.size || 0 if ActiveRecord::VERSION::MINOR >= 2
-              result
+          if should_be_run_with_departure?(sql)
+            log(sql, name, async: async) do |notification_payload|
+              with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
+                sync_timezone_changes(conn)
+                result = conn.query(sql)
+                conn.abandon_results! if ActiveRecord::VERSION::MINOR >= 2
+                verified! if ActiveRecord.version >= Gem::Version.create('7.1.2')
+                handle_warnings(sql)
+                notification_payload[:row_count] = result&.size || 0 if ActiveRecord::VERSION::MINOR >= 2
+                result
+              end
             end
+          else
+            mysql_adapter.execute(sql)
           end
+        end
+
+        # Checks whether the sql statement is an ALTER TABLE
+        #
+        # @param sql [String]
+        # @return [Boolean]
+        def should_be_run_with_departure?(sql)
+          sql =~ /\Aalter table/i
         end
 
         if ActiveRecord::VERSION::MINOR >= 2

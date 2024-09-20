@@ -23,13 +23,9 @@ module Departure
     #
     # @param sql [String]
     def query(sql)
-      if alter_statement?(sql)
-        command_line = cli_generator.parse_statement(sql)
-        execute(command_line)
-        affected_rows
-      else
-        mysql_adapter.execute(sql)
-      end
+      command_line = cli_generator.parse_statement(sql)
+      execute(command_line)
+      affected_rows
     end
 
     # Returns the number of rows affected by the last UPDATE, DELETE or INSERT
@@ -62,13 +58,5 @@ module Departure
     private
 
     attr_reader :logger, :cli_generator, :mysql_adapter, :error_log_path, :redirect_stderr
-
-    # Checks whether the sql statement is an ALTER TABLE
-    #
-    # @param sql [String]
-    # @return [Boolean]
-    def alter_statement?(sql)
-      sql =~ /\Aalter table/i
-    end
   end
 end
