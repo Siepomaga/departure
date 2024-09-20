@@ -22,10 +22,22 @@ module Departure
     # TABLE statements, or the specified mysql adapter otherwise.
     #
     # @param sql [String]
-    def query(sql)
-      command_line = cli_generator.parse_statement(sql)
-      execute(command_line)
-      affected_rows
+
+    if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+      def query(sql)
+        command_line = cli_generator.parse_statement(sql)
+        execute(command_line)
+        affected_rows
+      end
+    else
+      def query(sql)
+        if sql =~ /\Aalter table/i
+          command_line = cli_generator.parse_statement(sql)
+          execute(command_line)
+        else
+          mysql_adapter.execute(sql)
+        end
+      end
     end
 
     # Returns the number of rows affected by the last UPDATE, DELETE or INSERT

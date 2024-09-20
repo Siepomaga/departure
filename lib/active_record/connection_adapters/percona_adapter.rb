@@ -129,30 +129,55 @@ module ActiveRecord
 
       def write_query?(sql) # :nodoc:
         !ActiveRecord::ConnectionAdapters::AbstractAdapter.build_read_query_regexp(
-          :desc, :describe, :set, :show, :use
+          :desc, :describe, :set, :show, :use, :kill
         ).match?(sql)
       end
 
       def exec_delete(sql, name, binds)
-        execute(to_sql(sql, binds), name)
-        mysql_adapter.raw_connection.affected_rows
+        if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+          sql = transform_query(sql)
+          check_if_write_query(sql)
+          mark_transaction_written_if_write(sql)
+
+          result = raw_execute(to_sql(sql, binds), name)
+          result.affected_rows
+        else
+          execute(to_sql(sql, binds), name)
+          mysql_adapter.raw_connection.affected_rows
+        end
       end
       alias exec_update exec_delete
 
       def exec_insert(sql, name, binds, pk = nil, sequence_name = nil, returning: nil) # rubocop:disable Lint/UnusedMethodArgument, Metrics/LineLength, Metrics/ParameterLists
-        execute(to_sql(sql, binds), name)
+        sql = transform_query(sql)
+        check_if_write_query(sql)
+        mark_transaction_written_if_write(sql)
+
+        if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+          sql, _binds = sql_for_insert(sql, pk, binds, returning)
+        else
+          sql, _binds = sql_for_insert(sql, pk, binds)
+        end
+
+        raw_execute(sql, name)
       end
 
-      def internal_exec_query(sql, name = 'SQL', _binds = [], **_kwargs) # :nodoc:
-        result = execute(sql, name)
-        fields = result.fields if defined?(result.fields)
-        ActiveRecord::Result.new(fields, result.to_a)
+      def internal_exec_query(sql, name = 'SQL', binds = [], prepare: false, async: false, allow_retry: false) # :nodoc:
+        sql = transform_query(sql)
+        check_if_write_query(sql)
+        mark_transaction_written_if_write(sql)
+
+      if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+        result = raw_execute(sql, name, async: async, allow_retry: allow_retry)
+      else
+        result = raw_execute(sql, name, async: async)
+      end
+        ActiveRecord::Result.new(result.fields, result.to_a)
       end
       alias exec_query internal_exec_query
 
       # Executes a SELECT query and returns an array of rows. Each row is an
       # array of field values.
-
       def select_rows(arel, name = nil, binds = [])
         select_all(arel, name, binds).rows
       end
@@ -252,17 +277,7 @@ module ActiveRecord
       if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
         def raw_execute(sql, name, async: false, allow_retry: false, materialize_transactions: true)
           if should_be_run_with_departure?(sql)
-            log(sql, name, async: async) do |notification_payload|
-              with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
-                sync_timezone_changes(conn)
-                result = conn.query(sql)
-                conn.abandon_results! if ActiveRecord::VERSION::MINOR >= 2
-                verified! if ActiveRecord.version >= Gem::Version.create('7.1.2')
-                handle_warnings(sql)
-                notification_payload[:row_count] = result&.size || 0 if ActiveRecord::VERSION::MINOR >= 2
-                result
-              end
-            end
+            percona_adapter_raw_execute(sql, name, async, allow_retry, materialize_transactions)
           else
             mysql_adapter.execute(sql)
           end
@@ -274,6 +289,20 @@ module ActiveRecord
         # @return [Boolean]
         def should_be_run_with_departure?(sql)
           sql =~ /\Aalter table/i
+        end
+
+        def percona_adapter_raw_execute(sql, name, async, allow_retry, materialize_transactions)
+          log(sql, name, async: async) do |notification_payload|
+            with_raw_connection(allow_retry: allow_retry, materialize_transactions: materialize_transactions) do |conn|
+              sync_timezone_changes(conn)
+              result = conn.query(sql)
+              conn.abandon_results! if ActiveRecord::VERSION::MINOR >= 2
+              verified! if ActiveRecord.version >= Gem::Version.create('7.1.2')
+              handle_warnings(sql)
+              notification_payload[:row_count] = result&.size || 0 if ActiveRecord::VERSION::MINOR >= 2
+              result
+            end
+          end
         end
 
         if ActiveRecord::VERSION::MINOR >= 2
