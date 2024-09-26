@@ -53,11 +53,19 @@ module Departure
     # Migrate with or without Departure based on uses_departure class
     # attribute.
     def migrate(direction)
-      if uses_departure?
-        departure_migrate(direction)
+      if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+        if uses_departure?
+          with_percona_connection { active_record_migrate(direction) }
+        else
+          active_record_migrate(direction)
+        end
       else
-        reconnect_without_percona
-        active_record_migrate(direction)
+        if uses_departure?
+          departure_migrate(direction)
+        else
+          reconnect_without_percona
+          active_record_migrate(direction)
+        end
       end
     end
 
@@ -70,34 +78,93 @@ module Departure
       )
     end
 
-    # Make all connections in the connection pool to use PerconaAdapter
-    # instead of the current adapter.
-    def reconnect_with_percona
-      return if connection_config[:adapter] == 'percona'
-      Departure::ConnectionBase.establish_connection(connection_config.merge(adapter: 'percona'))
-    end
+    if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+      # Swap connection in the current thread with the percona connection and then return the original one.
+      def with_percona_connection(&block)
+        self.class.original_adapter = connection_pool.db_config.configuration_hash[:adapter]
+        if ActiveRecord::VERSION::MINOR == 1
+          original_connection = connection_pool.connection
+        else
+          current_lease = connection_pool.send(:connection_lease)
+          original_connection = current_lease.connection
+        end
+        original_migration_connection = ActiveRecord::Tasks::DatabaseTasks.instance_method(:migration_connection)
 
-    # Reconnect without percona adapter when Departure is disabled but was
-    # enabled in a previous migration.
-    def reconnect_without_percona
-      return unless connection_config[:adapter] == 'percona'
-      Departure::OriginalAdapterConnection.establish_connection(connection_config.merge(adapter: original_adapter))
+        swap_connection_pool_adapter('percona')
+
+        if ActiveRecord::VERSION::MINOR == 1
+          connection_pool.send(:remove_connection_from_thread_cache, original_connection, original_connection.owner)
+        end
+        percona_connection = connection_pool.checkout
+
+        include_foreigner if defined?(Foreigner)
+        ::Lhm.migration = self
+        current_lease.connection = percona_connection unless ActiveRecord::VERSION::MINOR == 1
+        ActiveRecord::Tasks::DatabaseTasks.define_method(:migration_connection) { percona_connection }
+
+        yield
+      ensure
+        ActiveRecord::Tasks::DatabaseTasks.define_method(:migration_connection, original_migration_connection)
+
+        if ActiveRecord::VERSION::MINOR == 1
+          conns = connection_pool.instance_variable_get(:@thread_cached_conns)
+          conns[ActiveSupport::IsolatedExecutionState.context] = original_connection
+          connection_pool.instance_variable_set(:@thread_cached_conns, conns)
+        else
+          current_lease.connection = original_connection
+          connection_pool.checkin(percona_connection)
+        end
+
+        swap_connection_pool_adapter(self.class.original_adapter)
+      end
+    else
+      # Make all connections in the connection pool to use PerconaAdapter
+      # instead of the current adapter.
+      def reconnect_with_percona
+        return if connection_config[:adapter] == 'percona'
+        Departure::ConnectionBase.establish_connection(connection_config.merge(adapter: 'percona'))
+      end
+
+      # Reconnect without percona adapter when Departure is disabled but was
+      # enabled in a previous migration.
+      def reconnect_without_percona
+        return unless connection_config[:adapter] == 'percona'
+        Departure::OriginalAdapterConnection.establish_connection(connection_config.merge(adapter: original_adapter))
+      end
     end
 
     private
 
-    # Capture the type of the adapter configured by the app if not already set.
-    def connection_config
-      configuration_hash.tap do |config|
-        self.class.original_adapter ||= config[:adapter]
+    if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+      if ActiveRecord::VERSION::MINOR == 1
+        def connection_pool
+          ActiveRecord::Base.connection_pool
+        end
       end
-    end
 
-    private def configuration_hash
-      if ActiveRecord::VERSION::STRING >= '6.1'
-        ActiveRecord::Base.connection_db_config.configuration_hash
-      else
-        ActiveRecord::Base.connection_config
+      def swap_connection_pool_adapter(adapter)
+        db_config = connection_pool.db_config
+        new_db_config = ActiveRecord::DatabaseConfigurations::HashConfig.new(
+          db_config.env_name,
+          db_config.name,
+          db_config.configuration_hash.dup.merge(adapter: adapter)
+        )
+        connection_pool.instance_variable_set(:@db_config, new_db_config)
+      end
+    else
+      # Capture the type of the adapter configured by the app if not already set.
+      def connection_config
+        configuration_hash.tap do |config|
+          self.class.original_adapter ||= config[:adapter]
+        end
+      end
+
+      private def configuration_hash
+        if ActiveRecord::VERSION::STRING >= '6.1'
+          ActiveRecord::Base.connection_db_config.configuration_hash
+        else
+          ActiveRecord::Base.connection_config
+        end
       end
     end
   end

@@ -22,12 +22,11 @@ module Departure
     # TABLE statements, or the specified mysql adapter otherwise.
     #
     # @param sql [String]
-
-    if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
+    if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 2
       def query(sql)
         command_line = cli_generator.parse_statement(sql)
         execute(command_line)
-        affected_rows
+        mysql_adapter.raw_connection.affected_rows
       end
     else
       def query(sql)
@@ -40,21 +39,9 @@ module Departure
       end
     end
 
-    # Returns the number of rows affected by the last UPDATE, DELETE or INSERT
-    # statements
-    #
-    # @return [Integer]
-    def affected_rows
-      mysql_adapter.raw_connection.affected_rows
-    end
-
     if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 2
       def escape(str)
-        mysql_adapter.raw_connection.escape(str)
-      end
-
-      def abandon_results!
-        mysql_adapter.raw_connection.abandon_results!
+        Mysql2::Client.escape(str)
       end
     end
 

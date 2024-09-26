@@ -16,7 +16,6 @@ require 'departure/errors'
 require 'departure/command'
 require 'departure/connection_base'
 require 'departure/migration'
-require 'departure/migrator'
 
 require 'departure/railtie' if defined?(Rails)
 
@@ -28,10 +27,12 @@ ActiveSupport.on_load(:active_record) do
     include Departure::Migration
   end
 
-  if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 1
-    ActiveRecord::Migrator.class_eval do
-      include Departure::Migrator
-    end
+  if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 2
+    ActiveRecord::ConnectionAdapters.register(
+      "percona",
+      "ActiveRecord::ConnectionAdapters::DepartureAdapter",
+      "active_record/connection_adapters/percona_adapter"
+    )
   end
 end
 
