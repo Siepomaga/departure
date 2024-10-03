@@ -47,10 +47,6 @@ module ActiveRecord
   end
 
   module ConnectionAdapters
-    if ActiveRecord::VERSION::MAJOR >= 7 && ActiveRecord::VERSION::MINOR >= 2
-      register "percona", "ActiveRecord::ConnectionAdapters::DepartureAdapter", "active_record/connection_adapters/percona_adapter"
-    end
-
     class DepartureAdapter < AbstractMysqlAdapter
       TYPE_MAP = Type::TypeMap.new.tap { |m| initialize_type_map(m) } if defined?(initialize_type_map)
 
