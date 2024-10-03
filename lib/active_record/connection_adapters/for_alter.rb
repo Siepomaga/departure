@@ -1,18 +1,29 @@
 require 'active_record/connection_adapters/mysql/schema_statements'
 
 module ForAlterStatements
-  def bulk_change_table(table_name, operations) #:nodoc:
-    sqls = operations.flat_map do |command, args|
-      table = args.shift
-      arguments = args
+  def bulk_change_table(table_name, operations) # :nodoc:
+    sql_fragments = []
+    non_combinable_operations = []
 
+    operations.each do |command, args|
+      table, arguments = args.shift, args
       method = :"#{command}_for_alter"
 
-      raise "Unknown method called : #{method}(#{arguments.inspect})" unless respond_to?(method, true)
-      public_send(method, table, *arguments)
-    end.join(', ')
+      if respond_to?(method, true)
+        sqls, procs = Array(send(method, table, *arguments)).partition { |v| v.is_a?(String) }
+        sql_fragments.concat(sqls)
+        non_combinable_operations.concat(procs)
+      else
+        execute "ALTER TABLE #{quote_table_name(table_name)} #{sql_fragments.join(", ")}" unless sql_fragments.empty?
+        non_combinable_operations.each(&:call)
+        sql_fragments = []
+        non_combinable_operations = []
+        send(command, table, *arguments)
+      end
+    end
 
-    execute("ALTER TABLE #{quote_table_name(table_name)} #{sqls}")
+    execute "ALTER TABLE #{quote_table_name(table_name)} #{sql_fragments.join(", ")}" unless sql_fragments.empty?
+    non_combinable_operations.each(&:call)
   end
 
   def change_column_for_alter(table_name, column_name, type, options = {})
